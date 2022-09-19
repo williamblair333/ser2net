@@ -1,0 +1,21 @@
+version: '3.8'
+ 
+services:
+    ser2net:
+        restart: unless-stopped
+        build: /opt/docker/ser2net
+         
+        ports:
+            - "2000:2000"
+       
+        volumes:
+            - ./ser2net.yaml:/etc/ser2net.yaml:rw
+         
+        devices:
+            # Configure udev on the host and pass device here
+            - /dev/usb1p0
+ 
+        tty: true
+ 
+volumes:
+    data:
