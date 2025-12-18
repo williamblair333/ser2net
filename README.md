@@ -1,7 +1,7 @@
-Tags: linux, serial, ser2net, tty, usb-serial, rs232, rs485, tcp, networking, docker, docker-compose, udev, systemd, headless, embedded, industrial, automation, zigbee, zwave, console-server
-
 ser2net-docker
 ===============
+
+Tags: linux, serial, ser2net, tty, usb-serial, rs232, rs485, tcp, networking, docker, docker-compose, udev, systemd, headless, embedded, industrial, automation, zigbee, zwave, console-server
 
 This repository packages **ser2net** in a Docker-based setup and adds
 supporting scripts to deal with problems that exist in real systems:
