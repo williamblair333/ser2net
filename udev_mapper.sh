@@ -1,86 +1,163 @@
 #!/bin/bash
+# udev_mapper.sh - Generate udev rules for USB-serial adapters
+#
+# Usage:
+#   ./udev_mapper.sh              Auto-scan, serial-based rules (preferred)
+#   ./udev_mapper.sh -k           KERNELS mode for all adapters (path-based)
+#   ./udev_mapper.sh -k ttyUSB2   KERNELS mode for specific device
+#
+# Output goes to stdout. Review before applying:
+#   ./udev_mapper.sh >> z21_persistent-local.rules
 
-# udev_mapper.sh - A script to manage udev rules for USB devices
+set -euo pipefail
 
-# Usage function
-display_help() {
-    echo "Usage: udev_mapper.sh -t <ttyUSB*> -u <usbX>"
-    echo "  -t, --tty     Specify the ttyUSB device (e.g., ttyUSB10)"
-    echo "  -u, --usb     Specify the usbX group (e.g., usb2)"
-    echo "  -h, --help    Display this help message"
-    echo "\nExamples:"
-    echo "  udev_mapper.sh -t ttyUSB10 -u usb2"
-    echo "  udev_mapper.sh --tty ttyUSB3 --usb usb1"
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS] [DEVICE]
+
+Generate udev rules for USB-serial adapters.
+
+Options:
+  -k, --kernels    Use KERNELS (physical USB path) instead of serial number
+                   Required for adapters without serial numbers (CH340/CH341)
+                   WARNING: Rules break if adapter moves to different USB port
+  -h, --help       Show this help
+
+Arguments:
+  DEVICE           Specific device (e.g., ttyUSB2). Default: scan all /dev/ttyUSB*
+
+Examples:
+  $(basename "$0")                 # Auto-scan, serial-based rules
+  $(basename "$0") -k              # Auto-scan, KERNELS mode
+  $(basename "$0") -k ttyUSB2      # KERNELS mode for specific device
+
+Output:
+  Rules are printed to stdout. Review, then append to rules file:
+    $(basename "$0") >> z21_persistent-local.rules
+    sudo ./udev_set.sh
+EOF
     exit 0
 }
 
-# Parse command-line arguments
-while [[ "$#" -gt 0 ]]; do
+# Parse arguments
+KERNELS_MODE=false
+TARGET_DEVICE=""
+
+while [[ $# -gt 0 ]]; do
     case "$1" in
-        -t|--tty)
-            ttyUSB="$2"
-            shift 2
-            ;;
-        -u|--usb)
-            usbX="$2"
-            shift 2
+        -k|--kernels)
+            KERNELS_MODE=true
+            shift
             ;;
         -h|--help)
-            display_help
+            usage
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            usage
             ;;
         *)
-            echo "Unknown option: $1"
-            display_help
+            TARGET_DEVICE="$1"
+            shift
             ;;
     esac
 done
 
-# Validate required arguments
-if [[ -z "$ttyUSB" || -z "$usbX" ]]; then
-    echo "Error: Missing required arguments."
-    display_help
-fi
-
-z21_file="z21_persistent-local.rules"
-
-# Find device path
-tty_entry=$(find /sys/ -name "$ttyUSB" -type d 2>/dev/null | awk 'NR==1{print $1; exit}')
-if [[ -z "$tty_entry" ]]; then
-    echo "Error: Device $ttyUSB not found."
-    exit 1
-fi
-
-# Extract first 3 attributes
-readarray -t attrs < <(sudo udevadm info --attribute-walk --path="$tty_entry" | grep 'KERNELS\|SUBSYSTEMS\|DRIVERS' | head -n3 | sed 's/^ *//')
-if [[ ${#attrs[@]} -ne 3 ]]; then
-    echo "Error: Could not retrieve device attributes."
-    exit 1
-fi
-
-kernels=${attrs[0]}
-subsystems=${attrs[1]}
-drivers=${attrs[2]}
-
-# Check if entry already exists in z21_persistent-local.rules
-existing_entry=$(grep -F "$kernels,$subsystems,$drivers" "$z21_file" 2>/dev/null)
-if [[ -n "$existing_entry" ]]; then
-    echo "Entry already exists:"
-    echo "$existing_entry"
-    exit 0
-fi
-
-# Find the next available pY value in the specified usbX
-max_pY=$(grep -oP "$usbX""p\d+" "$z21_file" 2>/dev/null | awk -F 'p' '{print $2}' | sort -n | tail -1)
-if [[ -z "$max_pY" ]]; then
-    next_pY=0  # Start at 0 if no previous entries exist
+# Build device list
+if [[ -n "$TARGET_DEVICE" ]]; then
+    # Specific device
+    if [[ "$TARGET_DEVICE" != /dev/* ]]; then
+        TARGET_DEVICE="/dev/$TARGET_DEVICE"
+    fi
+    if [[ ! -e "$TARGET_DEVICE" ]]; then
+        echo "Error: Device $TARGET_DEVICE not found" >&2
+        exit 1
+    fi
+    devices=("$TARGET_DEVICE")
 else
-    next_pY=$((max_pY + 1))
+    # Scan all
+    devices=(/dev/ttyUSB*)
+    if [[ ! -e "${devices[0]}" ]]; then
+        echo "# No /dev/ttyUSB* devices found" >&2
+        exit 1
+    fi
 fi
-new_symlink="$usbX""p$next_pY"
 
-# Append new rule
-echo "$kernels,$subsystems,$drivers,SYMLINK+="\"$new_symlink\""" | sudo tee -a "$z21_file"
+# Header
+echo "# Generated udev rules for USB-serial adapters"
+echo "# $(date)"
+if $KERNELS_MODE; then
+    echo "# Mode: KERNELS (physical USB path)"
+    echo "# WARNING: Rules will break if adapter is moved to a different USB port"
+else
+    echo "# Mode: Serial-based (preferred)"
+fi
+echo
 
-echo "Added new rule:"
-echo "$kernels,$subsystems,$drivers,SYMLINK+="\"$new_symlink\"""
+# Generate rules
+count=0
+for dev in "${devices[@]}"; do
+    [[ -e "$dev" ]] || continue
+    
+    devname=$(basename "$dev")
+    
+    # Get device info
+    vendor=$(udevadm info --name="$dev" 2>/dev/null | grep "ID_VENDOR_ID=" | cut -d= -f2)
+    model=$(udevadm info --name="$dev" 2>/dev/null | grep "ID_MODEL_ID=" | cut -d= -f2)
+    serial=$(udevadm info --name="$dev" 2>/dev/null | grep "ID_SERIAL_SHORT=" | cut -d= -f2)
+    
+    if [[ -z "$vendor" || -z "$model" ]]; then
+        echo "# WARN: $dev - could not read vendor/model, skipping" >&2
+        continue
+    fi
+    
+    echo "# $dev"
+    echo "# Vendor: $vendor  Product: $model  Serial: ${serial:-NONE}"
+    
+    if $KERNELS_MODE; then
+        # KERNELS mode - use physical USB path
+        syspath=$(udevadm info --name="$dev" --query=path 2>/dev/null)
+        if [[ -z "$syspath" ]]; then
+            echo "# ERROR: Could not get syspath for $dev" >&2
+            continue
+        fi
+        
+        # Get KERNELS value from udevadm attribute walk
+        kernels=$(udevadm info --attribute-walk --path="$syspath" 2>/dev/null | \
+                  grep "KERNELS==" | head -1 | sed 's/.*KERNELS=="//' | sed 's/"//')
+        
+        if [[ -z "$kernels" ]]; then
+            echo "# ERROR: Could not extract KERNELS for $dev" >&2
+            continue
+        fi
+        
+        echo "SUBSYSTEM==\"tty\", KERNELS==\"$kernels\", \\"
+        echo "  SYMLINK+=\"cisco${count}\", MODE=\"0660\", GROUP=\"dialout\""
+        
+    else
+        # Serial-based mode (default)
+        if [[ -z "$serial" ]]; then
+            echo "# WARNING: No serial number - use KERNELS mode instead:" >&2
+            echo "#   $(basename "$0") -k $devname" >&2
+            echo "# Skipping $dev (no serial)" 
+            echo
+            continue
+        fi
+        
+        echo "SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"$vendor\", ATTRS{idProduct}==\"$model\", \\"
+        echo "  ATTRS{serial}==\"$serial\", SYMLINK+=\"cisco${count}\", MODE=\"0660\", GROUP=\"dialout\""
+    fi
+    
+    echo
+    ((count++))
+done
 
+if [[ $count -eq 0 ]]; then
+    echo "# No rules generated"
+else
+    echo "# Generated $count rule(s)"
+    echo "# Next steps:"
+    echo "#   1. Review rules above"
+    echo "#   2. Append to z21_persistent-local.rules (or copy/paste)"
+    echo "#   3. Run: sudo ./udev_set.sh"
+fi

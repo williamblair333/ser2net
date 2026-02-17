@@ -1,5 +1,5 @@
 #!/bin/bash
-# List USB-serial devices with vendor/product/serial info
+# tty_get.sh - List USB-serial devices with vendor/product/serial info
 
 for dev in /dev/ttyUSB*; do
     [[ -e "$dev" ]] || { echo "No /dev/ttyUSB* devices found"; exit 0; }

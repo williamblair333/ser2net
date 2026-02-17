@@ -24,6 +24,7 @@ USB-Serial Adapter → /dev/cisco0 (udev symlink) → ser2net → TCP:7000
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
   - [udev Rules](#udev-rules)
+  - [Adapters Without Serial Numbers (KERNELS Mode)](#adapters-without-serial-numbers-kernels-mode)
   - [ser2net.conf](#ser2netconf)
   - [docker-compose.yml](#docker-composeyml)
 - [Connecting](#connecting)
@@ -56,7 +57,7 @@ USB-Serial Adapter → /dev/cisco0 (udev symlink) → ser2net → TCP:7000
 ├── nginx.conf                    # Log directory browser (optional)
 ├── z21_persistent-local.rules    # udev rules for stable symlinks
 ├── udev_set.sh                   # Installs udev rules
-├── udev_mapper.sh                # Generates rules from connected devices
+├── udev_mapper.sh                # Generates rules from connected devices (serial or KERNELS mode)
 ├── tty_get.sh                    # Lists detected tty devices
 └── ser2net_chmod_ttyUSB.sh       # Emergency permission fix
 ```
@@ -140,24 +141,61 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", \
   ATTRS{serial}=="A9BPHHWM", SYMLINK+="cisco0", MODE="0660", GROUP="dialout"
 ```
 
-<details>
-<summary><strong>Adapters without serial numbers</strong></summary>
+### Adapters Without Serial Numbers (KERNELS Mode)
 
-Some cheap CH340/CH341 adapters don't expose a USB serial. Use physical USB path instead:
+Some cheap USB-serial adapters (CH340, CH341) don't expose a USB serial number. For these, use **KERNELS mode** which creates rules based on the physical USB port position.
+
+> ⚠️ **Tradeoff:** KERNELS-based rules break if the adapter is moved to a different USB port. Serial-based rules don't have this limitation.
+
+**How to tell if your adapter has a serial:**
 
 ```bash
-# Get the physical path
-udevadm info --name=/dev/ttyUSB0 | grep DEVPATH
+udevadm info --name=/dev/ttyUSB0 | grep ID_SERIAL_SHORT
 ```
+
+If no output → adapter has no serial → use KERNELS mode.
+
+**Generate KERNELS-based rules:**
+
+```bash
+# All adapters
+./udev_mapper.sh -k
+
+# Specific adapter
+./udev_mapper.sh -k ttyUSB2
+```
+
+**Example output:**
 
 ```udev
-# Path-based rule (breaks if adapter moved to different USB port)
-SUBSYSTEM=="tty", KERNELS=="1-1.3.4.4:1.0", SYMLINK+="cisco2", MODE="0660", GROUP="dialout"
+# /dev/ttyUSB2
+# Vendor: 1a86  Product: 7523  Serial: NONE
+SUBSYSTEM=="tty", KERNELS=="1-1.3.4.4:1.0", \
+  SYMLINK+="cisco2", MODE="0660", GROUP="dialout"
 ```
 
-**Recommendation:** Buy adapters with unique serial numbers (FTDI, CP2102-based).
+**Understanding KERNELS values:**
 
-</details>
+The value `1-1.3.4.4:1.0` represents the physical USB topology:
+
+```
+1-1.3.4.4:1.0
+│ │ │ │ │ └── Interface number
+│ │ │ │ └──── Port on hub
+│ │ │ └────── Port on hub
+│ │ └──────── Port on hub
+│ └────────── Root hub port
+└──────────── Bus number
+```
+
+If you move the adapter to a different USB port, this path changes and the rule stops matching.
+
+**Best practice:** 
+
+- Use serial-based rules whenever possible
+- Reserve KERNELS mode for adapters without serials
+- Label physical USB ports so you know which adapter goes where
+- Consider replacing cheap adapters with FTDI or CP2102-based ones that have unique serials
 
 **Apply rules:**
 
@@ -266,6 +304,31 @@ minicom -D /dev/cisco0
 
 ## Adding New Adapters
 
+### Quick method (using udev_mapper.sh)
+
+```bash
+# 1. Plug in adapter
+
+# 2. Generate rules (auto-detects serial vs KERNELS)
+./udev_mapper.sh
+
+# 3. Review output, append to rules file
+./udev_mapper.sh >> z21_persistent-local.rules
+
+# 4. Reload udev
+sudo ./udev_set.sh
+
+# 5. Add to ser2net.conf
+echo '7002:raw:0:/dev/cisco2:9600 8DATABITS NONE 1STOPBIT LOCAL' >> ser2net.conf
+
+# 6. Add to docker-compose.yml (ports + devices sections)
+
+# 7. Restart
+docker compose down && docker compose up -d
+```
+
+### Manual method
+
 ```bash
 # 1. Plug in adapter, get info
 udevadm info --name=/dev/ttyUSB2 | grep -E "(ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT)"
@@ -285,6 +348,14 @@ echo '7002:raw:0:/dev/cisco2:9600 8DATABITS NONE 1STOPBIT LOCAL' >> ser2net.conf
 # 6. Restart
 docker compose down && docker compose up -d
 ```
+
+### For adapters without serial numbers
+
+```bash
+./udev_mapper.sh -k ttyUSB2
+```
+
+See [Adapters Without Serial Numbers](#adapters-without-serial-numbers-kernels-mode) for details.
 
 ---
 
