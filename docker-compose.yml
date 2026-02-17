@@ -1,29 +1,28 @@
-version: "3"
 services:
-    nginx:
-        image: nginx
-        restart: unless-stopped
-        ports:
-           - "80:80"
-        volumes:
-            - ./config/nginx.conf:/etc/nginx/nginx.conf
-            - ./logs:/usr/share/nginx/html:ro
-        environment:
-            - TZ=America/New_York
-            #   - TZ=America/Los_Angeles
-    ser2net:
-        build: build_ser2net
-        restart: unless-stopped
-        ports:
-            - "2000-2050:2000-2050"
-            - "3000:3000"
-        volumes:
-            - ./config/ser2net.conf:/etc/ser2net.conf:ro
-            - ./config/z21_persistent-local.rules:/etc/udev/rules.d/z21_persistent-local.rules:ro
-            - ./logs:/logs
-        environment:
-            - TZ=America/New_York
-            #   - TZ=America/Los_Angeles
-        devices:
-            - /dev/usb1p0
-            - /dev/usb1p1 
+  nginx:
+    image: nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./logs:/usr/share/nginx/html:ro
+    environment:
+      - TZ=America/New_York
+
+  ser2net:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "10.33.1.38:7000:7000"
+      - "10.33.1.38:7001:7001"
+      - "10.33.1.38:7002:7002"
+      - "10.33.1.38:7003:7003"
+      - "10.33.1.38:7004:7004"
+    devices:
+      - "/dev/cisco0:/dev/cisco0"
+      - "/dev/cisco1:/dev/cisco1"
+    volumes:
+      - ./ser2net.conf:/etc/ser2net.conf:ro
+    environment:
+      - TZ=America/New_York

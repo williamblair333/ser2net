@@ -1,2 +1,18 @@
-KERNELS=="1-1.3.4.4:1.0",SUBSYSTEMS=="usb",DRIVERS=="ftdi_sio",SYMLINK+="usb1p0"
-KERNELS=="1-1.3.4.3:1.0",SUBSYSTEMS=="usb",DRIVERS=="ftdi_sio",SYMLINK+="usb1p1"
+# Persistent symlinks for USB-serial adapters (Cisco console server)
+# FTDI adapters - keyed to USB serial number
+
+# Adapter 0 — serial A9BPHHWM → /dev/cisco0 (TCP 7000)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", \
+  ATTRS{serial}=="A9BPHHWM", SYMLINK+="cisco0", MODE="0660", GROUP="dialout"
+
+# Adapter 1 — serial A9MWP7V2 → /dev/cisco1 (TCP 7001)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", \
+  ATTRS{serial}=="A9MWP7V2", SYMLINK+="cisco1", MODE="0660", GROUP="dialout"
+
+# === ADAPTERS WITHOUT SERIAL NUMBERS ===
+# Some cheap CH340/CH341 adapters don't expose a USB serial.
+# Use physical USB path instead (breaks if moved to different port):
+#
+# Get path: udevadm info --name=/dev/ttyUSBX | grep DEVPATH
+# Example:
+# SUBSYSTEM=="tty", KERNELS=="1-1.3.4.4:1.0", SYMLINK+="cisco2", MODE="0660", GROUP="dialout"
