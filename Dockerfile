@@ -5,6 +5,4 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-EXPOSE 7000 7001 7002 7003 7004
-
 CMD ["ser2net", "-n", "-c", "/etc/ser2net.conf"]

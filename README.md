@@ -1,211 +1,366 @@
-ser2net-docker
-===============
+# ser2net-docker
 
-Tags: linux, serial, ser2net, tty, usb-serial, rs232, rs485, tcp, networking, docker, docker-compose, udev, systemd, headless, embedded, industrial, automation, zigbee, zwave, console-server
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+[![Debian](https://img.shields.io/badge/Debian-Bullseye-A81D33?logo=debian&logoColor=white)](https://www.debian.org/)
 
-This repository packages **ser2net** in a Docker-based setup and adds
-supporting scripts to deal with problems that exist in real systems:
-unstable device names, broken permissions, and repeatable deployment.
+> **Serial-to-TCP bridge in Docker with stable device naming**
 
-This is not a web application.  
-It exposes serial devices over TCP.
-
-If You do not understand what that means, do not run it on a public
-network.
-
----
-
-What this repository contains
-------------------------------
-
-ser2net itself is simple. The surrounding environment is not.
-
-This repository provides:
-
-- A Docker image running ser2net
-- A docker-compose file to run it
-- udev rules and scripts to make USB serial devices stable
-- Permission fixups for tty devices
-- Optional TCP proxying via nginx
-
-The goal is that a serial device connected to a Linux host can be
-reliably accessed over TCP without changing configuration every reboot.
-
----
-
-Repository layout
------------------
+Expose USB-serial devices over TCP using [ser2net](https://github.com/cminyard/ser2net), with udev rules for persistent naming and optional nginx for logging.
 
 ```
-Dockerfile
-    Builds the ser2net container.
-
-docker-compose.yml
-    Runs the container with the required device mappings.
-
-ser2net.conf
-    ser2net port-to-device configuration.
-
-nginx.conf
-    Optional TCP stream proxy configuration.
-
-tty_get.sh
-    Lists detected tty devices.
-
-udev_mapper.sh
-    Maps USB vendor/product IDs to stable device names.
-
-udev_set.sh
-    Installs udev rules for persistent device naming.
-
-z21_persistent-local.rules
-    Example udev rules file.
-
-ser2net_chmod_ttyUSB.sh
-    Fixes permissions on ttyUSB devices.
+USB-Serial Adapter → /dev/cisco0 (udev symlink) → ser2net → TCP:7000
 ```
 
+⚠️ **This is not a web application.** It gives raw access to serial devices over TCP. Do not expose to untrusted networks.
 
 ---
 
-Requirements
-------------
+## Table of Contents
 
-- Linux host
-- Docker and docker compose
-- A serial device exposed as `/dev/tty*`
-
-This repository assumes You have root access.
+- [Features](#features)
+- [Repository Layout](#repository-layout)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+  - [udev Rules](#udev-rules)
+  - [ser2net.conf](#ser2netconf)
+  - [docker-compose.yml](#docker-composeyml)
+- [Connecting](#connecting)
+- [Adding New Adapters](#adding-new-adapters)
+- [Troubleshooting](#troubleshooting)
+- [Security](#security)
+- [License](#license)
 
 ---
 
-Usage
------
+## Features
 
-1. Identify the serial device.
+| Feature | Description |
+|---------|-------------|
+| **Stable device names** | udev rules create `/dev/cisco0`, `/dev/cisco1`, etc. based on USB serial number |
+| **Dockerized** | Isolated, reproducible deployment |
+| **Survives reconnection** | Symlinks persist across reboots and USB re-plugs |
+| **Optional logging** | nginx serves a log directory browser on port 80 |
+| **Permission handling** | Scripts to fix common ttyUSB permission issues |
+
+---
+
+## Repository Layout
 
 ```
+.
+├── Dockerfile                    # Builds ser2net container (Debian Bullseye)
+├── docker-compose.yml            # Orchestrates ser2net + nginx
+├── ser2net.conf                  # Port-to-device mapping
+├── nginx.conf                    # Log directory browser (optional)
+├── z21_persistent-local.rules    # udev rules for stable symlinks
+├── udev_set.sh                   # Installs udev rules
+├── udev_mapper.sh                # Generates rules from connected devices
+├── tty_get.sh                    # Lists detected tty devices
+└── ser2net_chmod_ttyUSB.sh       # Emergency permission fix
+```
+
+---
+
+## Prerequisites
+
+- Linux host (tested on Debian/MX Linux)
+- Docker and docker-compose-v2
+- USB-serial adapter(s)
+- Root access
+
+```bash
+# Install dependencies
+sudo apt install docker.io docker-compose-v2
+
+# Add user to required groups (logout/login after)
+sudo usermod -aG dialout,docker $USER
+```
+
+---
+
+## Quick Start
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/williamblair333/ser2net.git
+cd ser2net
+
+# 2. Identify your adapters
 ./tty_get.sh
-```
 
-This prints available tty devices.
+# 3. Edit udev rules with your adapter serial numbers
+vim z21_persistent-local.rules
 
-2. Install persistent udev rules.
+# 4. Install udev rules
+sudo ./udev_set.sh
 
-```
-./udev_set.sh
-```
+# 5. Verify symlinks exist
+ls -la /dev/cisco*
 
-This installs rules from `z21_persistent-local.rules` so that the device
-name does not change across reboots.
+# 6. Start containers
+docker compose up --build -d
 
-Reload udev:
-
-```
-udevadm control --reload-rules
-udevadm trigger
-```
-
-3. Fix permissions.
-
-```
-./ser2net_chmod_ttyUSB.sh
-```
-
-This avoids the common failure mode where permissions break after a
-reboot or reconnect.
-
-4. Configure ser2net.
-
-Edit `ser2net.conf`.
-
-Example:
-
-```
-20108:raw:0:/dev/ttyUSB_Z21:115200 8DATABITS NONE 1STOPBIT
-```
-
-This exposes the device on TCP port 20108.
-
-5. Start the container.
-
-```
-docker compose up --build --detach
+# 7. Test connection
+nc <host-ip> 7000
 ```
 
 ---
 
-Access
-------
+## Configuration
 
-Connect from another system:
+### udev Rules
+
+The file `z21_persistent-local.rules` creates stable symlinks based on USB serial numbers.
+
+**Get adapter info:**
+
+```bash
+for d in /dev/ttyUSB*; do
+  echo "=== $d ==="
+  udevadm info --name="$d" | grep -E "(ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT)"
+done
+```
+
+**Example output:**
 
 ```
-nc <host> 20108
+=== /dev/ttyUSB0 ===
+E: ID_VENDOR_ID=0403
+E: ID_MODEL_ID=6001
+E: ID_SERIAL_SHORT=A9BPHHWM
 ```
 
-Applications that support TCP serial connections should point to:
+**Rule format:**
+
+```udev
+# Serial-based rule (preferred — survives moving to different USB port)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", \
+  ATTRS{serial}=="A9BPHHWM", SYMLINK+="cisco0", MODE="0660", GROUP="dialout"
+```
+
+<details>
+<summary><strong>Adapters without serial numbers</strong></summary>
+
+Some cheap CH340/CH341 adapters don't expose a USB serial. Use physical USB path instead:
+
+```bash
+# Get the physical path
+udevadm info --name=/dev/ttyUSB0 | grep DEVPATH
+```
+
+```udev
+# Path-based rule (breaks if adapter moved to different USB port)
+SUBSYSTEM=="tty", KERNELS=="1-1.3.4.4:1.0", SYMLINK+="cisco2", MODE="0660", GROUP="dialout"
+```
+
+**Recommendation:** Buy adapters with unique serial numbers (FTDI, CP2102-based).
+
+</details>
+
+**Apply rules:**
+
+```bash
+sudo ./udev_set.sh
+# or manually:
+sudo cp z21_persistent-local.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+---
+
+### ser2net.conf
+
+Maps TCP ports to device symlinks. Default: 9600 8N1 (Cisco console standard).
 
 ```
-tcp://<host>:20108
+# FORMAT: PORT:MODE:TIMEOUT:DEVICE:BAUD [OPTIONS]
+# TIMEOUT=0 = no idle disconnect
+# LOCAL = suppress modem control (required for USB-serial)
+
+7000:raw:0:/dev/cisco0:9600 8DATABITS NONE 1STOPBIT LOCAL
+7001:raw:0:/dev/cisco1:9600 8DATABITS NONE 1STOPBIT LOCAL
 ```
 
-Only one client should connect at a time.
+<details>
+<summary><strong>Common baud rates</strong></summary>
+
+| Device Type | Baud Rate |
+|-------------|-----------|
+| Cisco console (default) | 9600 |
+| Cisco ISR/ASR (some models) | 115200 |
+| Zigbee/Z-Wave sticks | 115200 |
+| Generic embedded | 9600 or 115200 |
+
+</details>
 
 ---
 
-nginx
------
+### docker-compose.yml
 
-`nginx.conf` provides TCP stream proxying.
+```yaml
+services:
+  nginx:
+    image: nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./logs:/usr/share/nginx/html:ro
+    environment:
+      - TZ=America/New_York
 
-This is optional.
+  ser2net:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "10.33.1.38:7000:7000"
+      - "10.33.1.38:7001:7001"
+    devices:
+      - "/dev/cisco0:/dev/cisco0"
+      - "/dev/cisco1:/dev/cisco1"
+    volumes:
+      - ./ser2net.conf:/etc/ser2net.conf:ro
+    environment:
+      - TZ=America/New_York
+```
 
-It exists for cases where ports need to be remapped or isolated.
-If You do not know why You need it, do not enable it.
-
----
-
-Security
---------
-
-ser2net does not provide authentication.
-
-It gives raw access to the serial device.
-
-Do not expose it to the public internet.
-
-Use a firewall, VPN, or SSH port forwarding.
-
-This is intentional.
-
----
-
-Failure modes
--------------
-
-- Device disappears:
-  Use udev rules. Do not rely on `/dev/ttyUSB0`.
-
-- Permission denied:
-  Fix permissions or group membership.
-
-- Unstable connections:
-  Check baud rate, flow control, and USB power.
+> **Note:** Replace `10.33.1.38` with your management IP, or use `0.0.0.0` to bind all interfaces.
 
 ---
 
-License
--------
+## Connecting
 
-GPL version 3.
+### Quick test
+
+```bash
+nc -zv <host> 7000          # Check port is open
+nc <host> 7000              # Connect (Ctrl+C to exit)
+```
+
+### telnet
+
+```bash
+telnet <host> 7000          # Ctrl+] then 'quit' to exit
+```
+
+### From applications
+
+```
+tcp://<host>:7000
+```
+
+> **Important:** Only one client should connect at a time.
+
+### Local access (bypassing Docker)
+
+```bash
+screen /dev/cisco0 9600     # Ctrl+A K to kill
+minicom -D /dev/cisco0
+```
 
 ---
 
-Notes
------
+## Adding New Adapters
 
-This repository exists because serial hardware is still common and
-Linux still names devices poorly by default.
+```bash
+# 1. Plug in adapter, get info
+udevadm info --name=/dev/ttyUSB2 | grep -E "(ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL_SHORT)"
 
+# 2. Add rule to z21_persistent-local.rules
+SUBSYSTEM=="tty", ATTRS{idVendor}=="XXXX", ATTRS{idProduct}=="XXXX", \
+  ATTRS{serial}=="YYYYYYYY", SYMLINK+="cisco2", MODE="0660", GROUP="dialout"
 
+# 3. Reload udev
+sudo ./udev_set.sh
+
+# 4. Add to ser2net.conf
+echo '7002:raw:0:/dev/cisco2:9600 8DATABITS NONE 1STOPBIT LOCAL' >> ser2net.conf
+
+# 5. Add to docker-compose.yml (ports + devices sections)
+
+# 6. Restart
+docker compose down && docker compose up -d
+```
+
+---
+
+## Troubleshooting
+
+### Container won't start
+
+```bash
+docker compose logs ser2net
+ls -la /dev/cisco*           # Symlinks exist?
+```
+
+### Connection refused
+
+```bash
+docker compose ps            # Container running?
+ss -tulpn | grep 7000        # Port listening?
+```
+
+### Permission denied
+
+```bash
+sudo ./ser2net_chmod_ttyUSB.sh
+docker compose restart
+```
+
+### No output after connecting
+
+- Press **Enter** several times (wake console)
+- Verify baud rate matches device
+- Check cable (rollover vs straight-through)
+- Test directly: `screen /dev/cisco0 9600`
+
+### Symlink not created
+
+```bash
+# Check for syntax errors
+sudo udevadm test $(udevadm info --query=path --name=/dev/ttyUSB0) 2>&1 | grep -i symlink
+
+# Force re-trigger
+sudo udevadm trigger --action=add --subsystem-match=tty
+```
+
+### Device reconnected but container can't see it
+
+Devices are passed at container start. Reconnecting requires restart:
+
+```bash
+docker compose restart
+```
+
+---
+
+## Security
+
+> **ser2net provides NO authentication.** Anyone who can reach the port has raw console access.
+
+| Control | Implementation |
+|---------|----------------|
+| Bind to specific IP | `10.33.1.38:7000:7000` in compose |
+| Host firewall | `ufw allow from 10.0.0.0/8 to any port 7000:7009 proto tcp` |
+| VPN / SSH tunnel | `ssh -L 7000:10.33.1.38:7000 user@host` |
+| VLAN isolation | Put management IP on dedicated VLAN |
+
+**Do not expose to the public internet.**
+
+---
+
+## License
+
+[GPL v3](https://www.gnu.org/licenses/gpl-3.0)
+
+---
+
+## Why this exists
+
+Linux names USB devices by enumeration order (`/dev/ttyUSB0`, `/dev/ttyUSB1`, ...), which changes on reboot or reconnection. This makes reliable automation impossible without udev rules.
+
+This repository solves that problem and packages everything for repeatable deployment.
